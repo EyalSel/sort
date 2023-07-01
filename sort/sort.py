@@ -17,16 +17,12 @@
 """
 from __future__ import print_function
 
-import os.path
-import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
-from skimage import io
-from sort.utils import linear_assignment
-import glob
-import time
 import argparse
+
+import numpy as np
 from filterpy.kalman import KalmanFilter
+
+from sort.utils import linear_assignment
 
 
 def iou(bb_test, bb_gt):
@@ -56,6 +52,7 @@ def convert_bbox_to_z(bbox):
     x = bbox[0] + w / 2.
     y = bbox[1] + h / 2.
     s = w * h  #scale is just area
+    assert h > 0, bbox
     r = w / float(h)
     return np.array([x, y, s, r]).reshape((4, 1))
 
@@ -131,7 +128,11 @@ class KalmanBoxTracker(object):
         """
     Advances the state vector and returns the predicted bounding box estimate.
     """
-        if ((self.kf.x[6] + self.kf.x[2]) <= 0):
+        # Eyal: this is thresholded at 1 and not at 0 because a value between 0
+        # and 1 later gets int-truncated to 0 by the sort_tracker module.
+        # It's easier to alter to behavior of the Sort tracker here instead of
+        # doing external manipulation.
+        if ((self.kf.x[6] + self.kf.x[2]) <= 1):
             self.kf.x[6] *= 0.0
         self.kf.predict()
         self.age += 1
@@ -263,83 +264,3 @@ def parse_args():
                         action='store_true')
     args = parser.parse_args()
     return args
-
-
-if __name__ == '__main__':
-    # all train
-    sequences = [
-        'PETS09-S2L1', 'TUD-Campus', 'TUD-Stadtmitte', 'ETH-Bahnhof',
-        'ETH-Sunnyday', 'ETH-Pedcross2', 'KITTI-13', 'KITTI-17',
-        'ADL-Rundle-6', 'ADL-Rundle-8', 'Venice-2'
-    ]
-    args = parse_args()
-    display = args.display
-    phase = 'train'
-    total_time = 0.0
-    total_frames = 0
-    colours = np.random.rand(32, 3)  #used only for display
-    if (display):
-        if not os.path.exists('mot_benchmark'):
-            print(
-                '\n\tERROR: mot_benchmark link not found!\n\n    Create a symbolic link to the MOT benchmark\n    (https://motchallenge.net/data/2D_MOT_2015/#download). E.g.:\n\n    $ ln -s /path/to/MOT2015_challenge/2DMOT2015 mot_benchmark\n\n'
-            )
-            exit()
-        plt.ion()
-        fig = plt.figure()
-
-    if not os.path.exists('output'):
-        os.makedirs('output')
-
-    for seq in sequences:
-        mot_tracker = Sort()  #create instance of the SORT tracker
-        seq_dets = np.loadtxt('data/%s/det.txt' % (seq),
-                              delimiter=',')  #load detections
-        with open('output/%s.txt' % (seq), 'w') as out_file:
-            print("Processing %s." % (seq))
-            for frame in range(int(seq_dets[:, 0].max())):
-                frame += 1  #detection and frame numbers begin at 1
-                dets = seq_dets[seq_dets[:, 0] == frame, 2:7]
-                dets[:,
-                     2:4] += dets[:, 0:
-                                  2]  #convert to [x1,y1,w,h] to [x1,y1,x2,y2]
-                total_frames += 1
-
-                if (display):
-                    ax1 = fig.add_subplot(111, aspect='equal')
-                    fn = 'mot_benchmark/%s/%s/img1/%06d.jpg' % (phase, seq,
-                                                                frame)
-                    im = io.imread(fn)
-                    ax1.imshow(im)
-                    plt.title(seq + ' Tracked Targets')
-
-                start_time = time.time()
-                trackers = mot_tracker.update(dets)
-                cycle_time = time.time() - start_time
-                total_time += cycle_time
-
-                for d in trackers:
-                    print('%d,%d,%.2f,%.2f,%.2f,%.2f,1,-1,-1,-1' %
-                          (frame, d[4], d[0], d[1], d[2] - d[0], d[3] - d[1]),
-                          file=out_file)
-                    if (display):
-                        d = d.astype(np.int32)
-                        ax1.add_patch(
-                            patches.Rectangle((d[0], d[1]),
-                                              d[2] - d[0],
-                                              d[3] - d[1],
-                                              fill=False,
-                                              lw=3,
-                                              ec=colours[d[4] % 32, :]))
-                        ax1.set_adjustable('box-forced')
-
-                if (display):
-                    fig.canvas.flush_events()
-                    plt.draw()
-                    ax1.cla()
-
-    print("Total Tracking took: %.3f for %d frames or %.1f FPS" %
-          (total_time, total_frames, total_frames / total_time))
-    if (display):
-        print(
-            "Note: to get real runtime results run without the option: --display"
-        )

@@ -14,10 +14,10 @@ import numpy as np
 import warnings
 
 # Deprecation warning for module
-warnings.warn(
-    "The linear_assignment_ module is deprecated in 0.21 "
-    "and will be removed from 0.23. Use "
-    "scipy.optimize.linear_sum_assignment instead.", FutureWarning)
+# warnings.warn(
+#     "The linear_assignment_ module is deprecated in 0.21 "
+#     "and will be removed from 0.23. Use "
+#     "scipy.optimize.linear_sum_assignment instead.", FutureWarning)
 
 
 def linear_assignment(X):
@@ -88,8 +88,8 @@ class _HungarianState:
 
         # At this point, m >= n.
         n, m = self.C.shape
-        self.row_uncovered = np.ones(n, dtype=np.bool)
-        self.col_uncovered = np.ones(m, dtype=np.bool)
+        self.row_uncovered = np.ones(n, dtype=bool)
+        self.col_uncovered = np.ones(m, dtype=bool)
         self.Z0_r = 0
         self.Z0_c = 0
         self.path = np.zeros((n + m, 2), dtype=int)
@@ -118,10 +118,10 @@ def _hungarian(cost_matrix):
         The pairs of (row, col) indices in the original array giving
         the original ordering.
     """
-    warnings.warn(
-        "The linear_assignment function is deprecated in 0.21 "
-        "and will be removed from 0.23. Use "
-        "scipy.optimize.linear_sum_assignment instead.", FutureWarning)
+    # warnings.warn(
+    #     "The linear_assignment function is deprecated in 0.21 "
+    #     "and will be removed from 0.23. Use "
+    #     "scipy.optimize.linear_sum_assignment instead.", FutureWarning)
 
     state = _HungarianState(cost_matrix)
 
@@ -188,9 +188,9 @@ def _step4(state):
     left. Save the smallest uncovered value and Go to Step 6.
     """
     # We convert to int as numpy operations are faster on int
-    C = (state.C == 0).astype(np.int)
+    C = (state.C == 0).astype(int)
     covered_C = C * state.row_uncovered[:, np.newaxis]
-    covered_C *= state.col_uncovered.astype(dtype=np.int, copy=False)
+    covered_C *= state.col_uncovered.astype(dtype=int, copy=False)
     n = state.C.shape[0]
     m = state.C.shape[1]
     while True:
@@ -212,7 +212,7 @@ def _step4(state):
                 state.row_uncovered[row] = False
                 state.col_uncovered[col] = True
                 covered_C[:, col] = C[:, col] * (state.row_uncovered.astype(
-                    dtype=np.int, copy=False))
+                    dtype=int, copy=False))
                 covered_C[row] = 0
 
 
