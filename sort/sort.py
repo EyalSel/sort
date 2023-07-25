@@ -244,7 +244,7 @@ class Sort(object):
             if ((trk.time_since_update < 1)
                     and (trk.hit_streak >= self.min_hits
                          or self.frame_count <= self.min_hits)):
-                ret.append(np.concatenate((d, [trk.id + 1])).reshape(
+                ret.append(np.concatenate((d, [trk.id + 1, trk.label])).reshape(
                     1, -1))  # +1 as MOT benchmark requires positive
             i -= 1
             #remove dead tracklet
