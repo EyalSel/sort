@@ -7,7 +7,8 @@ setup(
     install_requires=[
         "scipy",
         "filterpy==1.4.1",
-        "scikit-learn==0.19.2"
+        "scikit-learn==0.19.2",
+        "numba==0.58.1"
     ],
     packages=find_packages(exclude=["scripts*", "notebooks*"])
 )

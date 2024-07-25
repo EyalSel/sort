@@ -23,8 +23,10 @@ import numpy as np
 from filterpy.kalman import KalmanFilter
 
 from sort.utils import linear_assignment
+from numba import njit
 
 
+@njit(cache=True)
 def iou(bb_test, bb_gt):
     """
   Computes IUO between two bboxes in the form [x1,y1,x2,y2]
