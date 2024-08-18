@@ -43,6 +43,7 @@ def iou(bb_test, bb_gt):
     return (o)
 
 
+@njit(cache=True)
 def convert_bbox_to_z(bbox):
     """
   Takes a bounding box in the form [x1,y1,x2,y2] and returns z in the form
@@ -93,7 +94,7 @@ class KalmanBoxTracker(object):
             KalmanBoxTracker.count += 1
         else:
             self.id = track_id
-        self.kf = KalmanFilter(dim_x=7, dim_z=4)
+        self.kf = KalmanFilter(dim_x=7, dim_z=4, compute_log_likelihood=False)
         self.kf.F = np.array([[1, 0, 0, 0, 1, 0, 0], [0, 1, 0, 0, 0, 1, 0],
                               [0, 0, 1, 0, 0, 0, 1], [0, 0, 0, 1, 0, 0, 0],
                               [0, 0, 0, 0, 1, 0, 0], [0, 0, 0, 0, 0, 1, 0],
