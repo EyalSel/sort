@@ -77,13 +77,38 @@ def convert_x_to_bbox(x, score=None):
         ]).reshape((1, 5))
 
 
+def apply_override(kf, parameter_override):
+    # Possible overrides:
+    # - R
+    # - P
+    # - Q
+    # Possible entries:
+    # - x
+    # - y
+    # - s
+    # - r
+    # - dx
+    # - dy
+    # - ds
+    for _, row in parameter_override.iterrows():
+        matrix_name = row['matrix_name']
+        parameter_name = row['parameter_name']
+        value = row['value']
+        parameter_index = ['x', 'y', 's', 'r', 'dx', 'dy',
+                           'ds'].index(parameter_name)
+        # using __getattribute__ to access the matrix by name (ok because
+        # matrix is an object)
+        kf.__getattribute__(matrix_name)[parameter_index,
+                                         parameter_index] *= value
+
+
 class KalmanBoxTracker(object):
     """
   This class represents the internel state of individual tracked objects observed as bbox.
   """
     count = 0
 
-    def __init__(self, bbox, label, track_id=-1):
+    def __init__(self, bbox, label, track_id=-1, parameter_override=None):
         """
     Initialises a tracker using initial bounding box.
     """
@@ -102,13 +127,15 @@ class KalmanBoxTracker(object):
         self.kf.H = np.array([[1, 0, 0, 0, 0, 0, 0], [0, 1, 0, 0, 0, 0, 0],
                               [0, 0, 1, 0, 0, 0, 0], [0, 0, 0, 1, 0, 0, 0]])
 
-        self.kf.R[2:, 2:] *= 10.
-        self.kf.P[
-            4:,
-            4:] *= 1000.  #give high uncertainty to the unobservable initial velocities
-        self.kf.P *= 10.
-        self.kf.Q[-1, -1] *= 0.01
-        self.kf.Q[4:, 4:] *= 0.01
+        if parameter_override is None:
+            self.kf.R[2:, 2:] *= 10.
+            # give high uncertainty to the unobservable initial velocities
+            self.kf.P[4:, 4:] *= 1000.
+            self.kf.P *= 10.
+            self.kf.Q[-1, -1] *= 0.01
+            self.kf.Q[4:, 4:] *= 0.01
+        else:
+            apply_override(self.kf, parameter_override)
 
         self.kf.x[:4] = convert_bbox_to_z(bbox)
         self.time_since_update = 0
@@ -196,7 +223,12 @@ def associate_detections_to_trackers(detections, trackers, iou_threshold=0.3):
 
 
 class Sort(object):
-    def __init__(self, max_age=1, min_hits=3, min_iou=0.3):
+
+    def __init__(self,
+                 max_age=1,
+                 min_hits=3,
+                 min_iou=0.3,
+                 parameter_override=None):
         """
     Sets key parameters for SORT
     """
@@ -205,6 +237,7 @@ class Sort(object):
         self.min_iou = min_iou
         self.trackers = []
         self.frame_count = 0
+        self.parameter_override = parameter_override
 
     def update(self, dets, labels=None, ids=None):
         """
@@ -239,16 +272,20 @@ class Sort(object):
 
         #create and initialise new trackers for unmatched detections
         for i in unmatched_dets:
-            trk = KalmanBoxTracker(dets[i, :], labels[i], ids[i])
+            trk = KalmanBoxTracker(dets[i, :],
+                                   labels[i],
+                                   ids[i],
+                                   parameter_override=self.parameter_override)
             self.trackers.append(trk)
         i = len(self.trackers)
         for trk in reversed(self.trackers):
             d = trk.get_state()[0]
-            if ((trk.time_since_update < 1)
-                    and (trk.hit_streak >= self.min_hits
-                         or self.frame_count <= self.min_hits)):
-                ret.append(np.concatenate((d, [trk.id + 1, trk.label])).reshape(
-                    1, -1))  # +1 as MOT benchmark requires positive
+            if ((trk.time_since_update < 1) and
+                (trk.hit_streak >= self.min_hits or
+                 self.frame_count <= self.min_hits)):
+                ret.append(
+                    np.concatenate((d, [trk.id + 1, trk.label])).reshape(
+                        1, -1))  # +1 as MOT benchmark requires positive
             i -= 1
             #remove dead tracklet
             if (trk.time_since_update > self.max_age):
