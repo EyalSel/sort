@@ -18,12 +18,13 @@
 from __future__ import print_function
 
 import argparse
+from abc import ABC, abstractmethod
 
 import numpy as np
 from filterpy.kalman import KalmanFilter
+from numba import njit
 
 from sort.utils import linear_assignment
-from numba import njit
 
 
 @njit(cache=True)
@@ -108,7 +109,7 @@ class KalmanBoxTracker(object):
   """
     count = 0
 
-    def __init__(self, bbox, label, track_id=-1, parameter_override=None):
+    def __init__(self, bbox, label, track_id=-1, cmc_manager=None, parameter_override=None):
         """
     Initialises a tracker using initial bounding box.
     """
@@ -144,6 +145,9 @@ class KalmanBoxTracker(object):
         self.hit_streak = 0
         self.age = 0
 
+        assert cmc_manager is None or isinstance(cmc_manager, CMCManager), type(cmc_manager)
+        self.cmc_manager = cmc_manager
+
     def update(self, bbox):
         """
     Updates the state vector with observed bbox.
@@ -164,7 +168,23 @@ class KalmanBoxTracker(object):
         # doing external manipulation.
         if ((self.kf.x[6] + self.kf.x[2]) <= 1):
             self.kf.x[6] *= 0.0
-        self.kf.predict()
+        if self.cmc_manager is not None:
+            # Overrides the F, B, u matrices in the Kalman Filter
+            x1, y1, x2, y2 = convert_x_to_bbox(self.kf.x)[0].tolist()
+            xywh = [x1, y1, x2-x1, y2-y1]
+            result = self.cmc_manager.get_transition_to_next_frame(xywh)
+            if result is None:
+                self.kf.predict()
+            elif result["type"] == "override":
+                x, y, w, h = result["content"]
+                x1y1x2y2 = [x, y, x+w, y+h]
+                self.kf.x[:4] = convert_bbox_to_z(x1y1x2y2)
+            else:
+                assert result["type"] == "integrate", result["type"]
+                F, B, u = result["content"]
+                self.kf.predict(F=F, B=B, u=u)
+        else:
+            self.kf.predict()
         self.age += 1
         if (self.time_since_update > 0):
             self.hit_streak = 0
@@ -221,6 +241,86 @@ def associate_detections_to_trackers(detections, trackers, iou_threshold=0.3):
     return matches, np.array(unmatched_detections), np.array(
         unmatched_trackers)
 
+"""
+Background: The SORT tracker uses a Kalman Filter to advance/forecast boxes
+across frames, and an IOU-based matching algorithm to associate the box ids
+between the predicted boxes from the last frame and the observed boxes in the
+current frame. This design generally assumes smooth, slow box motion that can be
+modeled with the Kalman Filter's linear motion model, so that the Kalman Filter
+can predict the box's next location "close enough" to the true location so that
+the predicted location has a high IOU with the detection boxes in the following
+frame, leading to correct association.
+
+Challenge: I observed this intended behavior violated for small boxes in
+front-facing car camera workloads. Specifically, the Kalman Filter motion
+forecasting for such objects does not effectively induce high IOU with the same
+object's next frame detection. This happens in the following settings, among
+others:
+ 1. Turns: When the car turns, small boxes in the distance can suddenly (within
+    1 frame) move several box-lengths away from their previous location. The
+    Kalman Filter can't compensate with this acceleration, leading to 0 IOU with
+    the new location, which results in error that continues propagating until
+    turing stops.
+ 2. Road bumps: When the ego vehicle drives over road bumps, the front-facing
+    camera swings up and down, suddenly jerking small objects vertically outside
+    of their original location. Kalman Filter can't react to this acceleration
+    (a spike in motion), leaving the forecasted boxes far outside (0 IOU) the
+    object's detected location in the next frame.
+
+To reduce error, I am trying to use camera motion compensation (CMC) to improve
+motion forecasting of small boxes.
+
+To introduce CMC, we use two modes:
+
+KF-integration: The key idea is to augment the Kalman Filter's state transition
+(through matrices F, B, and u) on a per-frame basis based on the observed pixel
+changes between the current and next frame. In essence, this changes the Kalman
+Filter's model from linear to time-varying linear, where the linear transform
+changes at every step. This doesn't change anything else about the Kalman
+Filter's machinery.
+
+Override: The CMC module just returns the new box location and overwrites the
+Kalman Filter's state.
+
+====================
+IMPLEMENTATION DETAILS:
+
+The CMC implementation (e.g. how F, B, and u are determined from the frames) is
+abstracted out of the SORT module. To facilitate this, the SORT module takes as
+a parameter an instance of CMCManager, which the SORT module uses as a client
+following the interface laid out in the class definition.
+"""
+
+
+class CMCManager(ABC):
+    """
+    The abstract interface for the camera motion compensation module. In order
+    to combine with the Kalman Filter transition, this module is used to modify
+    the box transitions.
+    """
+
+    @abstractmethod
+    def increment_frame_number(self):
+        """
+        Call to notify the instance that the frame has been incremented.
+        """
+        pass
+
+    @abstractmethod
+    def get_transition_to_next_frame(self, xywh):
+        """
+        Argument: The tracklet box's xywh
+
+        Returns a dictionary with two fields: "type" which can be "override" or
+        "integrate". If "override". The other field is "content". If "type" is
+        "override", "content" should have the new box location in [x,y,w,h]
+        format. IF "type" is "integrate", "content" should be a tuple with the
+        new matrices F, B, and u to be used when forecasting the state for the
+        next step. Use "content" = None to make no change to the Kalman Filter
+        behavior or state.
+        """
+        pass
+
 
 class Sort(object):
 
@@ -228,6 +328,7 @@ class Sort(object):
                  max_age=1,
                  min_hits=3,
                  min_iou=0.3,
+                 cmc_manager=None,
                  parameter_override=None):
         """
     Sets key parameters for SORT
@@ -237,6 +338,8 @@ class Sort(object):
         self.min_iou = min_iou
         self.trackers = []
         self.frame_count = 0
+        assert cmc_manager is None or isinstance(cmc_manager, CMCManager), type(cmc_manager)
+        self.cmc_manager = cmc_manager
         self.parameter_override = parameter_override
 
     def update(self, dets, labels=None, ids=None):
@@ -248,6 +351,8 @@ class Sort(object):
 
     NOTE: The number of objects returned may differ from the number of detections provided.
     """
+        if self.cmc_manager is not None:
+            self.cmc_manager.increment_frame_number()
         self.frame_count += 1
         #get predicted locations from existing trackers.
         trks = np.zeros((len(self.trackers), 5))
@@ -275,6 +380,7 @@ class Sort(object):
             trk = KalmanBoxTracker(dets[i, :],
                                    labels[i],
                                    ids[i],
+                                   cmc_manager=self.cmc_manager,
                                    parameter_override=self.parameter_override)
             self.trackers.append(trk)
         i = len(self.trackers)
